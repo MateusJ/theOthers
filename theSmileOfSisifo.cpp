@@ -28,6 +28,14 @@ string generateJwtId() {
     return ss.str();
 }
 
+picojson::value convertToPicoValue(const json& j) {
+    stringstream ss;
+    ss << j;
+    picojson::value v;
+    ss >> v;
+    return v;
+}
+
 /*
  * function to sign jwt
  * @param1 payload with claims
@@ -36,11 +44,15 @@ string generateJwtId() {
  */
 string signJwt(const json& payload, const string& privateKey) {
 	try {
-		string payloadStr = payload.dump();
+		//string payloadStr = payload.dump();
+		picojson::value picoPayload = convertToPicoValue(payload);
+		cout << payload << endl;
+		cout << picoPayload << endl;
 		auto token = jwt::create()
 		    .set_issuer("auth0")
 		    .set_type("JWT")
-		    .set_payload_claim("payload", jwt::claim(payloadStr))
+		    .set_payload_claim("payload", jwt::claim(picoPayload))
+		    //.set_payload_claim("payload", jwt::claim(payloadStr))
 		    .sign(jwt::algorithm::rs256("", privateKey, "", ""));
 
     	return token;
