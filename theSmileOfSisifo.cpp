@@ -1,6 +1,7 @@
 #include <iostream>
 #include <iomanip>
 #include <fstream>
+#include <bitset>
 #include <string>
 #include <ctime>
 #include <sys/socket.h>
@@ -48,14 +49,15 @@ string signJwt(const json& payload, const string& privateKey) {
 		picojson::value picoPayload = convertToPicoValue(payload);
 		cout << payload << endl;
 		cout << picoPayload << endl;
-		auto token = jwt::create()
-		    .set_issuer("auth0")
-		    .set_type("JWT")
-		    .set_payload_claim("payload", jwt::claim(picoPayload))
-		    //.set_payload_claim("payload", jwt::claim(payloadStr))
-		    .sign(jwt::algorithm::rs256("", privateKey, "", ""));
-
-    	return token;
+		auto payloadMap = picoPayload.get<picojson::object>();
+		auto token = jwt::create();
+		for (const auto& entry : payloadMap) {
+            token.set_payload_claim(entry.first, jwt::claim(entry.second));
+         }
+		    //.set_payload_claim("payload", jwt::claim(picoPayload));
+		    //.set_payload_claim("payload", jwt::claim(payload))
+		auto signedToken = token.sign(jwt::algorithm::rs256("", privateKey, "", ""));
+    	return signedToken;
     } catch (const exception& e) {
         cerr << "Error signing JWT: " << e.what() << endl;   
         return "";  
@@ -98,6 +100,22 @@ bool setSocketTimeout(int sockfd, int seconds) {
     return true;
 }
 
+std::string convertSecretKey(const std::string& originalKey) {
+    // Convert the original key to a string of bytes
+    std::string keyBytes;
+    for (char c : originalKey) {
+        keyBytes.push_back(static_cast<uint8_t>(c));
+    }
+
+    // Ensure the key is 32 bytes long
+    if (keyBytes.length() < 32) {
+        keyBytes.append(32 - keyBytes.length(), '\0');
+    } else if (keyBytes.length() > 32) {
+        keyBytes = keyBytes.substr(0, 32);
+    }
+
+    return keyBytes;
+}
 /*
  * function to verify the signature of a JWT using the provided public key
  * @param1 jwt to verify
@@ -105,16 +123,24 @@ bool setSocketTimeout(int sockfd, int seconds) {
  * @return true if verification succeeds, false otherwise
  */
 bool verifyJwt(const string& jwt, const string& publicKey) {
+	string secretKey = "secret-key-for-dec7557";
+	string binary = "0111001101100101011000110111001001100101011101000010110101101011011001010111100100101101011001100110111101110010 0010110101100100011001010110001100110111001101010011010100110111";
+	string hex = "7365637265742d6b65792d666f722d64656337353537";
+	string fff = "7365637265742d6b65792d666f722d6465633735353700000000000000000000";
+	string ffff = "7365637265742d6b65792d666f722d64656337353537000000000000000000000000000000000000000000000000000000";
 	try {
     	auto decoded = jwt::decode(jwt);
-        auto verifier = jwt::verify()
+        jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{ffff})
+            .verify(decoded);
+        /*auto verifier = jwt::verify()
             .allow_algorithm(jwt::algorithm::rs256(publicKey, "", "", ""))
-            .with_issuer("auth0");
+            .with_issuer("auth0");*/
             
-        verifier.verify(decoded);
+        //verifier.verify(decoded);
         string payloadStr = decoded.get_payload();
         writeToFile("output.txt", payloadStr, "OK");
-        //cout << payloadStr << endl;
+        cout << payloadStr << endl;
         return true;
     } catch (const exception& e) {
         cerr << "JWT verification failed: " << e.what() << endl;
@@ -147,19 +173,27 @@ json payLoadHandler(const int& seq_state) {
 	registrations = {21203170, 20105143, 21101364, 21203170, 20105143, 21101364, 21203170};
 	
 	json payLoad = {
+		{"iss", "auth0"},
 		{"sub", "THEOTHERS"},
         {"aud", "udp.socket.server.for.jwt"},
+        {"jti", generateJwtId()},
+        {"iat", time(0)},
+        {"exp", time(0) + 30},
         {"seq_state_number", seq_state},
         {"seq_state", seq_states[seq_state]},
         {"seq_max", 3},
         {"registration", registrations[seq_state]},
-        {"jti", generateJwtId()},
-        {"iat", time(0)},
-        {"exp", time(0) + 30}
 	};
 	return payLoad;
 }
 
+/*
+ * function to send the token
+ * @param1 socket
+ * @param2 token jwt
+ * @param3 socket structure related
+ * @return boolean
+ */
 bool sendJwtToken(int sockfd, const string& jwtToken, const sockaddr_in& serverAddr) {
     ssize_t sentBytes = sendto(sockfd, jwtToken.c_str(), jwtToken.length(), 0,
                                (const struct sockaddr*)&serverAddr, sizeof(serverAddr));
@@ -171,6 +205,13 @@ bool sendJwtToken(int sockfd, const string& jwtToken, const sockaddr_in& serverA
     return true;
 }
 
+/*
+ * function to receive the token
+ * @param1 socket
+ * @param2 socket structure related
+ * @param3 timeout in sec
+ * @return token
+ */
 string receiveJwtToken(int sockfd, sockaddr_in& serverAddr, int timeoutSeconds) {
     char buffer[1024];
     socklen_t serverAddrLen = sizeof(serverAddr);
@@ -211,7 +252,7 @@ int main() {
     serverAddr.sin_port = htons(port);
     inet_pton(AF_INET, ip.c_str(), &(serverAddr.sin_addr));
 
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < 7; i++) {
         // sign the jwt using the private key and create payload
         string jwt = signJwt(payLoadHandler(i), privateKey);
 
