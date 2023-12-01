@@ -11,13 +11,15 @@
 #include <openssl/rand.h> 
 #include <jwt-cpp/jwt.h>
 #include <nlohmann/json.hpp>
+#include <filesystem>
 
 using namespace std;
 using json = nlohmann::json;
 
+
 /*
  * function	to generate a random 16-byte hex string
- * @return integers as a string
+ * @return string
  */
 string generateJwtId() {
     unsigned char buffer[16];
@@ -45,18 +47,15 @@ picojson::value convertToPicoValue(const json& j) {
  */
 string signJwt(const json& payload, const string& privateKey) {
 	try {
-		//string payloadStr = payload.dump();
 		picojson::value picoPayload = convertToPicoValue(payload);
-		cout << payload << endl;
-		cout << picoPayload << endl;
 		auto payloadMap = picoPayload.get<picojson::object>();
-		auto token = jwt::create();
+		auto token = jwt::create().set_algorithm("RS256").set_type("JWT");
 		for (const auto& entry : payloadMap) {
             token.set_payload_claim(entry.first, jwt::claim(entry.second));
-         }
-		    //.set_payload_claim("payload", jwt::claim(picoPayload));
-		    //.set_payload_claim("payload", jwt::claim(payload))
+        }
+
 		auto signedToken = token.sign(jwt::algorithm::rs256("", privateKey, "", ""));
+		cout << signedToken << endl;
     	return signedToken;
     } catch (const exception& e) {
         cerr << "Error signing JWT: " << e.what() << endl;   
@@ -71,13 +70,25 @@ string signJwt(const json& payload, const string& privateKey) {
  * @param3 status
  */
 void writeToFile(const string& fileName, const string& response, const string& allGood) {
-	ofstream outputFile(fileName);
+	time_t timeStamp = chrono::system_clock::to_time_t(chrono::system_clock::now());
+	string timeStampStr = ctime(&timeStamp);
+	ofstream outputFile(fileName, ios::app);
 	if(outputFile.is_open()) {
-		outputFile << response + "    " + allGood;
+		outputFile << timeStampStr << "status: " + allGood << endl << response << endl;
 		outputFile.close();
 		cout << "Data successfully written to " << fileName << endl;
 	} else {
 		cout << "Error openning file" << endl;
+	}
+}
+
+/*
+ * function	to delete logfile if it exists
+ */
+void checkFile() {
+	FILE *f;
+	if (f = fopen("output.txt", "r")) {
+		remove("output.txt");
 	}
 }
 
@@ -91,60 +102,53 @@ bool setSocketTimeout(int sockfd, int seconds) {
     struct timeval timeout;
     timeout.tv_sec = seconds;
     timeout.tv_usec = 0;
-
     if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         perror("Error setting socket timeout");
         return false;
     }
-
     return true;
 }
 
-std::string convertSecretKey(const std::string& originalKey) {
-    // Convert the original key to a string of bytes
-    std::string keyBytes;
-    for (char c : originalKey) {
-        keyBytes.push_back(static_cast<uint8_t>(c));
-    }
-
-    // Ensure the key is 32 bytes long
-    if (keyBytes.length() < 32) {
-        keyBytes.append(32 - keyBytes.length(), '\0');
-    } else if (keyBytes.length() > 32) {
-        keyBytes = keyBytes.substr(0, 32);
-    }
-
-    return keyBytes;
+/*
+ * function to verify the order of the states
+ * @param1 received nextSeqNumber
+ * @param2 last seqNumber sent (state)
+ * @return true if verification succeeds, false otherwise
+ */
+bool verifySeqOrder(const int& receivNeSeqNumb, const int& state) {
+	if (state == 6) {
+		return receivNeSeqNumb == 0;
+	} else {
+		return receivNeSeqNumb == state + 1;
+	}
 }
+
 /*
  * function to verify the signature of a JWT using the provided public key
  * @param1 jwt to verify
  * @param2 public key
+ * @param3 actual state
  * @return true if verification succeeds, false otherwise
  */
-bool verifyJwt(const string& jwt, const string& publicKey) {
-	string secretKey = "secret-key-for-dec7557";
-	string binary = "0111001101100101011000110111001001100101011101000010110101101011011001010111100100101101011001100110111101110010 0010110101100100011001010110001100110111001101010011010100110111";
-	string hex = "7365637265742d6b65792d666f722d64656337353537";
-	string fff = "7365637265742d6b65792d666f722d6465633735353700000000000000000000";
-	string ffff = "7365637265742d6b65792d666f722d64656337353537000000000000000000000000000000000000000000000000000000";
+bool verifyJwt(const string& jwt, const string& publicKey, int& state) {
+	const string secretKey = "secret-key-for-dec7557\n";
 	try {
     	auto decoded = jwt::decode(jwt);
         jwt::verify()
-            .allow_algorithm(jwt::algorithm::hs256{ffff})
+            .allow_algorithm(jwt::algorithm::hs256{secretKey})
             .verify(decoded);
-        /*auto verifier = jwt::verify()
-            .allow_algorithm(jwt::algorithm::rs256(publicKey, "", "", ""))
-            .with_issuer("auth0");*/
-            
-        //verifier.verify(decoded);
         string payloadStr = decoded.get_payload();
-        writeToFile("output.txt", payloadStr, "OK");
-        cout << payloadStr << endl;
-        return true;
+        int rnsn = decoded.get_payload_claim("next_number").as_number();
+        if(verifySeqOrder(rnsn, state)) {
+        	writeToFile("output.txt", payloadStr, "OK");
+        	return true;	
+        } else {
+        	writeToFile("output.txt", payloadStr, "NOT OK -> NEXTNUMBER OUT OF ORDER");
+        	return false;	
+        }
     } catch (const exception& e) {
         cerr << "JWT verification failed: " << e.what() << endl;
-        writeToFile("output.txt", "NOT OK", "NOT OK");
+        writeToFile("output.txt", "Verification failed", "NOT OK");
         return false;
     }
 }
@@ -156,7 +160,7 @@ bool verifyJwt(const string& jwt, const string& publicKey) {
  */
 string loadKeyFromFile(const string& filePath) {
     ifstream fileStream(filePath);
-    string key((std::istreambuf_iterator<char>(fileStream)), istreambuf_iterator<char>());
+    string key((istreambuf_iterator<char>(fileStream)), istreambuf_iterator<char>());
     return key;
 }
 
@@ -173,7 +177,6 @@ json payLoadHandler(const int& seq_state) {
 	registrations = {21203170, 20105143, 21101364, 21203170, 20105143, 21101364, 21203170};
 	
 	json payLoad = {
-		{"iss", "auth0"},
 		{"sub", "THEOTHERS"},
         {"aud", "udp.socket.server.for.jwt"},
         {"jti", generateJwtId()},
@@ -215,7 +218,6 @@ bool sendJwtToken(int sockfd, const string& jwtToken, const sockaddr_in& serverA
 string receiveJwtToken(int sockfd, sockaddr_in& serverAddr, int timeoutSeconds) {
     char buffer[1024];
     socklen_t serverAddrLen = sizeof(serverAddr);
-    
     if (!setSocketTimeout(sockfd, timeoutSeconds)) {
         cerr << "Error setting socket timeout" << endl;
         return "";
@@ -234,11 +236,12 @@ string receiveJwtToken(int sockfd, sockaddr_in& serverAddr, int timeoutSeconds) 
 }
 
 int main() {
-    string privateKey = loadKeyFromFile("/home/jean/Documents/redes/private_key.pem");
-    string publicKey = loadKeyFromFile("/home/jean/Documents/redes/public_key.pem");
-    const int port = 44555;
+    const string privateKey = loadKeyFromFile("/home/jean/Documents/redes/private_key.pem");
+    const string publicKey = loadKeyFromFile("/home/jean/Documents/redes/public_key.pem");
 	const string ip = "172.233.186.185";
-	const int setTimeOut = 30;
+	const int port = 44555;
+	const int setTimeOut = 10;
+	checkFile();
 	
 	int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -252,26 +255,26 @@ int main() {
     serverAddr.sin_port = htons(port);
     inet_pton(AF_INET, ip.c_str(), &(serverAddr.sin_addr));
 
-	for (int i = 0; i < 7; i++) {
-        // sign the jwt using the private key and create payload
-        string jwt = signJwt(payLoadHandler(i), privateKey);
+	for (int state = 0; state < 7; state++) {
+        //sign the jwt using the private key and create payload
+        string jwt = signJwt(payLoadHandler(state), privateKey);
 
-        // send the jwt token to the server
+        //send the jwt token to the server
         if (sendJwtToken(sockfd, jwt, serverAddr)) {
-            // print success message and simulate sending the JWT over UDP
             cout << "JWT signed and sent successfully." << endl;
-
-            // receive the jwt token from the server
+            
+            //receive the jwt token from the server
             sockaddr_in receivedServerAddr;
             string receivedJwt = receiveJwtToken(sockfd, receivedServerAddr, setTimeOut);
-
+            
             if (!receivedJwt.empty()) {
-                // verify the jwt signature using the public key
-                if (verifyJwt(receivedJwt, publicKey)) {
+                //verify the jwt signature using the public key
+                if (verifyJwt(receivedJwt, publicKey, state)) {
                     cout << "JWT received and verified successfully." << endl;
                 } else {
                     cerr << "Failed to verify received JWT." << endl;
-                    return 1;
+                    sleep(3);
+                    state = 0; //start from scratch
                 }
             } else {
                 cerr << "Failed to receive JWT." << endl;
